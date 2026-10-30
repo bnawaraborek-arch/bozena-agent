@@ -1,89 +1,130 @@
-const assert = require('node:assert/strict');
+﻿const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
+const path = require('node:path');
 const ts = require('typescript');
 const { test } = require('node:test');
-
-// Nie uruchamiamy Next.js ani ładowania plików .env. OpenRouter jest atrapą.
-function setup(configured = true) {
-  let calls = 0;
-  let now = 1_000;
-  const source = fs.readFileSync('app/api/chat/route.ts', 'utf8');
-  const compiled = ts.transpileModule(source, {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
-  }).outputText;
-  const exports = {};
-  const context = {
-    exports, Response, Date: { now: () => now },
-    process: { env: configured ? {
-      CHAT_ACCESS_CODE: 'temporary-test-code',
-      OPENROUTER_API_KEY: 'fake-test-key', OPENROUTER_MODEL: 'fake-test-model',
-    } : {} },
-    require(name) {
-      if (name === '@openrouter/ai-sdk-provider') return {
-        createOpenRouter: () => { calls++; return () => ({}); },
-      };
-      if (name === 'ai') return {
-        validateUIMessages: require('ai').validateUIMessages,
-        convertToModelMessages: require('ai').convertToModelMessages,
-        streamText: () => ({ toUIMessageStreamResponse: () => new Response('mock stream') }),
-      };
-      if (name === 'node:crypto') return require(name);
-      throw new Error(`Unexpected import: ${name}`);
-    },
-    fetch() { throw new Error('Network forbidden in tests'); },
-  };
-  vm.runInNewContext(compiled, context);
-  return {
-    calls: () => calls,
-    advance: () => { now += 60_001; },
-    post: (code, messages = []) => exports.POST(new Request('http://localhost/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...(code === undefined ? {} : { 'X-Chat-Access-Code': code }) },
-      body: JSON.stringify({ messages }),
-    })),
-  };
+function setup(overrides = {}, options = {}) {
+  let calls = 0, now = Date.now();
+  const { MockLanguageModelV3, convertArrayToReadableStream } = require('ai/test');
+  const model = new MockLanguageModelV3({ doStream: async () => ({ stream: convertArrayToReadableStream([
+    { type: 'stream-start', warnings: [] },
+    { type: 'text-start', id: 'text' },
+    ...(options.streamError ? [{ type: 'error', error: new Error('private provider details') }] : [
+      { type: 'text-delta', id: 'text', delta: 'Masz na ' },
+      { type: 'text-delta', id: 'text', delta: 'imię Alex.' },
+    ]),
+    { type: 'text-end', id: 'text' },
+    { type: 'finish', finishReason: { unified: 'stop', raw: 'stop' }, usage: {
+      inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+      outputTokens: { total: 1, text: 1, reasoning: 0 },
+    } },
+  ]) }) });
+  const env = { CHAT_PASSWORD: 'test-password', SESSION_SECRET: 's'.repeat(48), NODE_ENV: 'development', OPENROUTER_API_KEY: 'fake', OPENROUTER_MODEL: 'fake', ...overrides };
+  const cache = {};
+  function load(file) {
+    file = path.resolve(file);
+    if (cache[file]) return cache[file];
+    const exports = {}; cache[file] = exports;
+    vm.runInNewContext(ts.transpileModule(fs.readFileSync(file,'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText, {
+      exports, Response, Buffer, URL, Date: { now: () => now }, process: { env },
+      require(name) {
+        if (name.startsWith('.')) return load(path.resolve(path.dirname(file),name) + '.ts');
+        if (name === 'node:crypto') return require(name);
+        if (name === '@openrouter/ai-sdk-provider') return { createOpenRouter: () => { calls++; if (options.providerError) throw new Error('private provider details'); return () => model; } };
+        if (name === 'ai') return options.realSDK ? require('ai') : { validateUIMessages: require('ai').validateUIMessages, convertToModelMessages: require('ai').convertToModelMessages, streamText: () => ({ toUIMessageStreamResponse: () => new Response('mock stream') }) };
+        throw new Error('Unexpected import');
+      },
+      fetch() { throw new Error('Network forbidden'); },
+    });
+    return exports;
+  }
+  return { env, model, calls: () => calls, advance: ms => now += ms, async request(endpoint, body, cookie, origin = 'http://localhost') {
+    const method = endpoint === 'session' ? 'GET' : 'POST';
+    return load('app/api/' + endpoint + '/route.ts')[method](new Request('http://localhost/api/' + endpoint, {
+      method, headers: { origin, 'Content-Type': 'application/json', ...(cookie ? { cookie } : {}) }, ...(method === 'POST' ? { body: JSON.stringify(body || {}) } : {}),
+    }));
+  } };
 }
-
-const valid = [{ id: 'test', role: 'user', parts: [{ type: 'text', text: 'Cześć' }] }];
-
-test('brak i błędny kod dają 401 przed OpenRouter, także przy poprawnej wiadomości', async () => {
-  const app = setup();
-  assert.equal((await app.post(undefined, valid)).status, 401);
-  assert.equal((await app.post('wrong', valid)).status, 401);
-  assert.equal(app.calls(), 0);
+const valid = { messages: [{ id:'test', role:'user', parts:[{ type:'text', text:'Hello' }] }] };
+const login = app => app.request('login', { password:'test-password' });
+const token = response => response.headers.get('set-cookie').split(';')[0];
+test('wrong password and unauthenticated chat never call model', async () => {
+ const app = setup();
+ assert.equal((await app.request('login',{password:'wrong'})).status,401);
+ assert.equal((await app.request('chat',valid)).status,401);
+ assert.equal(app.calls(),0);
+});
+test('login, signed cookie, streaming and history validation', async () => {
+ const app = setup(); const r = await login(app); assert.equal(r.status,204);
+ const c = r.headers.get('set-cookie');
+ assert.match(c,/HttpOnly/); assert.match(c,/SameSite=Strict/); assert.match(c,/Max-Age=28800/); assert.ok(!c.includes('test-password'));
+ assert.equal((await app.request('session',null,token(r))).status,204);
+ assert.equal((await app.request('chat',{messages:[]},token(r))).status,400);
+ const response = await app.request('chat',valid,token(r)); assert.equal(await response.text(),'mock stream'); assert.equal(app.calls(),1);
+});
+test('tampering and expired sessions rejected before model', async () => {
+ const app=setup(); const c=token(await login(app));
+ assert.equal((await app.request('chat',valid,c+'x')).status,401);
+ app.advance(28801000); assert.equal((await app.request('chat',valid,c)).status,401); assert.equal(app.calls(),0);
+});
+test('logout clears browser session and subsequent chat is denied', async () => {
+ const app=setup(); const c=token(await login(app));
+ const r=await app.request('logout',{},c); assert.equal(r.status,204); assert.match(r.headers.get('set-cookie'),/chat_session=;.*Max-Age=0/);
+ assert.equal((await app.request('chat',valid,token(r))).status,401); assert.equal(app.calls(),0);
+});
+test('missing settings and production WAF confirmation fail closed', async () => {
+ for(const overrides of [{ CHAT_PASSWORD:'' },{ SESSION_SECRET:'' },{ SESSION_SECRET:' '.repeat(48) },{ NODE_ENV:'production' }]) {
+  const app=setup(overrides); assert.equal((await login(app)).status,503); assert.equal((await app.request('chat',valid)).status,401); assert.equal(app.calls(),0);
+ }
+ const app=setup({NODE_ENV:'production',CHAT_LOGIN_RATE_LIMIT_CONFIGURED:'true'});
+ assert.match((await login(app)).headers.get('set-cookie'),/; Secure/);
 });
 
-test('poprawny kod przechodzi do walidacji: pusta historia i pusty tekst dają 400', async () => {
-  const app = setup();
-  assert.equal((await app.post('temporary-test-code')).status, 400);
-  assert.equal((await app.post('temporary-test-code', [
-    { id: 'test', role: 'user', parts: [{ type: 'text', text: '   ' }] },
-  ])).status, 400);
-  assert.equal(app.calls(), 0);
+test('real AI SDK streams text deltas and passes the entire conversation to the local model', async () => {
+ const app=setup({}, {realSDK:true}); const c=token(await login(app));
+ const messages=[
+  {id:'1',role:'user',parts:[{type:'text',text:'Mam na imię Alex'}]},
+  {id:'2',role:'assistant',parts:[{type:'text',text:'Cześć Alex'}]},
+  {id:'3',role:'user',parts:[{type:'text',text:'Jak mam na imię?'}]},
+ ];
+ const response=await app.request('chat',{messages},c);
+ assert.match(response.headers.get('content-type'),/text\/event-stream/);
+ const body=await response.text();
+ assert.match(body,/"type":"text-delta"/); assert.match(body,/Masz na /); assert.match(body,/imię Alex/); assert.match(body,/\[DONE\]/);
+ const prompt=app.model.doStreamCalls[0].prompt;
+ assert.deepEqual(prompt.map(m=>m.role),['user','assistant','user']);
+ assert.equal(prompt[0].content[0].text,'Mam na imię Alex');
+ assert.equal(prompt[2].content[0].text,'Jak mam na imię?');
 });
 
-test('poprawny kod i wiadomość dochodzą do atrapy streamingu', async () => {
-  const app = setup();
-  const response = await app.post('temporary-test-code', valid);
-  assert.equal(response.status, 200);
-  assert.equal(await response.text(), 'mock stream');
-  assert.equal(app.calls(), 1);
+test('missing OpenRouter config, empty messages and provider errors are handled safely', async () => {
+ const app=setup({OPENROUTER_API_KEY:''}); const c=token(await login(app));
+ assert.equal((await app.request('chat',valid,c)).status,503); assert.equal(app.calls(),0);
+ assert.equal((await app.request('chat',{messages:[{id:'1',role:'user',parts:[{type:'text',text:'   '}]}]},c)).status,400);
+ const failed=setup({}, {providerError:true});
+ const r=await failed.request('chat',valid,token(await login(failed)));
+ assert.equal(r.status,502); assert.ok(!(await r.text()).includes('private provider details'));
 });
 
-test('brak konfiguracji kodu zamyka dostęp', async () => {
-  const app = setup(false);
-  assert.equal((await app.post('temporary-test-code', valid)).status, 401);
-  assert.equal(app.calls(), 0);
+test('stream errors produce a safe Polish message rather than provider details', async () => {
+ const app=setup({}, {realSDK:true,streamError:true});
+ const response=await app.request('chat',valid,token(await login(app)));
+ const body=await response.text();
+ assert.match(body,/"type":"error"/); assert.match(body,/OpenRouter/); assert.ok(!body.includes('private provider details'));
+});
+test('five attempts limited, window recovers, foreign origin rejected', async () => {
+ const app=setup();
+ assert.equal((await app.request('login',{password:'test-password'},null,'https://evil.example')).status,403);
+ for(let i=0;i<5;i++) assert.equal((await app.request('login',{password:'wrong'})).status,401);
+ const r=await login(app); assert.equal(r.status,429); assert.ok(Number(r.headers.get('retry-after'))>0);
+ app.advance(60001); assert.equal((await login(app)).status,204);
+ assert.equal((await app.request('logout',{},null,'https://evil.example')).status,403);
 });
 
-test('10 błędnych prób blokuje weryfikację do końca minuty', async () => {
-  const app = setup();
-  for (let i = 0; i < 10; i++) assert.equal((await app.post('wrong')).status, 401);
-  const blocked = await app.post('temporary-test-code', valid);
-  assert.equal(blocked.status, 401);
-  assert.ok(Number(blocked.headers.get('Retry-After')) > 0);
-  assert.equal(app.calls(), 0);
-  app.advance();
-  assert.equal((await app.post('temporary-test-code')).status, 400);
+test('origin uses public request Host when Next.js has an internal URL', () => {
+ const source=ts.transpileModule(fs.readFileSync('lib/session.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText;
+ const exports={}; vm.runInNewContext(source,{exports,require,URL,process:{env:{}}});
+ assert.equal(exports.sameOrigin(new Request('http://localhost:3217/api/login',{headers:{host:'127.0.0.1:3217',origin:'http://127.0.0.1:3217'}})),true);
+ assert.equal(exports.sameOrigin(new Request('http://localhost:3217/api/login',{headers:{host:'127.0.0.1:3217',origin:'https://evil.example','x-forwarded-host':'evil.example'}})),false);
 });

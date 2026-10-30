@@ -1,18 +1,18 @@
 ﻿"use client";
 import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport } from 'ai';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 const transport = new DefaultChatTransport({ api: '/api/chat' });
 
-export default function Home() {
-  const { messages, sendMessage, status, error, clearError } = useChat({ transport });
+function Chat({ onLogout }: { onLogout: () => void }) {
+  const { messages, sendMessage, status, error, clearError, stop } = useChat({ transport });
+  useEffect(() => () => { void stop(); }, [stop]);
   const [input, setInput] = useState('');
-  const [accessCode, setAccessCode] = useState('');
   const busy = status === 'submitted' || status === 'streaming';
   return (
     <main>
-      <h1>Mój chatbot</h1>
+      <h1>Mój chatbot</h1><button onClick={onLogout}>Wyjdź</button>
       <section className="conversation" aria-label="Rozmowa" aria-live="polite" aria-busy={busy}>
         {messages.length === 0 && <p>Napisz wiadomość, aby rozpocząć rozmowę.</p>}
         {messages.map(message => (
@@ -27,21 +27,63 @@ export default function Home() {
       <form onSubmit={event => {
         event.preventDefault();
         const text = input.trim();
-        if (!text || !accessCode || busy) return;
+        if (!text || busy) return;
         clearError();
         setInput('');
-        void sendMessage({ text }, { headers: { 'X-Chat-Access-Code': accessCode } });
+        void sendMessage({ text });
       }}>
-        <label htmlFor="access-code">Kod dostępu</label>
-        <input id="access-code" name="access-code" type="password" autoComplete="off"
-          required value={accessCode} onChange={event => setAccessCode(event.target.value)} disabled={busy} />
         <label htmlFor="message">Wiadomość</label>
         <div className="message-row">
           <input id="message" name="message" placeholder="Napisz wiadomość…" autoComplete="off"
             value={input} onChange={event => setInput(event.target.value)} disabled={busy} />
-          <button type="submit" disabled={busy || !input.trim() || !accessCode}>Wyślij</button>
+          <button type="submit" disabled={busy || !input.trim()}>Wyślij</button>
         </div>
       </form>
     </main>
   );
+}
+
+export default function Home() {
+  const [authenticated, setAuthenticated] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    fetch('/api/session', { cache: 'no-store' }).then(r => setAuthenticated(r.ok))
+      .catch(() => setError('Nie udało się sprawdzić sesji.')).finally(() => setLoading(false));
+  }, []);
+  async function logout() {
+    setError('');
+    try {
+      const response = await fetch('/api/logout', { method: 'POST' });
+      if (!response.ok) throw new Error();
+      setAuthenticated(false);
+    } catch { setError('Nie udało się wyjść. Spróbuj ponownie.'); }
+  }
+  if (loading) return <main><p>Sprawdzanie sesji…</p></main>;
+  if (authenticated) return <><Chat onLogout={() => void logout()} />{error && <p role="alert">{error}</p>}</>;
+  return <main>
+    <h1>Wpisz hasło</h1>
+    <form onSubmit={async event => {
+      event.preventDefault();
+      setBusy(true);
+      setError('');
+      try {
+        const response = await fetch('/api/login', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password }),
+        });
+        setPassword('');
+        if (response.ok) setAuthenticated(true);
+        else setError(await response.text());
+      } catch { setError('Błąd połączenia. Spróbuj ponownie.'); }
+      finally { setBusy(false); }
+    }}>
+      <label htmlFor="password">Hasło</label>
+      <input id="password" type="password" autoComplete="current-password" required
+        value={password} onChange={event => setPassword(event.target.value)} disabled={busy} />
+      <button disabled={busy} type="submit">Wejdź</button>
+      {error && <p role="alert">{error}</p>}
+    </form>
+  </main>;
 }
