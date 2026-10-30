@@ -1,0 +1,17 @@
+﻿* { box-sizing: border-box; }
+body { margin: 0; background: #f3f5f9; color: #172033; font-family: Arial, Helvetica, sans-serif; }
+main { width: min(720px, calc(100% - 32px)); margin: 48px auto; }
+h1 { margin: 0 0 24px; font-size: 32px; }
+.conversation { height: 420px; background: white; border: 1px solid #d5dce7; border-radius: 12px; margin-bottom: 24px; overflow-y: auto; }
+label { display: block; margin-bottom: 8px; font-weight: 600; }
+.message-row { display: flex; gap: 12px; }
+input { min-width: 0; flex: 1; padding: 14px; border: 1px solid #aab6c8; border-radius: 8px; font: inherit; }
+button { padding: 14px 22px; border: 0; border-radius: 8px; background: #254fbd; color: white; font: inherit; cursor: pointer; }
+button:hover { background: #1c3e98; }
+input:focus-visible, button:focus-visible { outline: 3px solid #759bee; outline-offset: 3px; }
+.conversation { padding: 20px; }
+.message { padding: 12px; margin-bottom: 12px; border-radius: 8px; background: #f3f5f9; }
+.message.user { background: #e9efff; }
+.message p { white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0 0; line-height: 1.5; }
+.error { color: #a11b28; overflow-wrap: anywhere; }
+button:disabled { opacity: .55; cursor: not-allowed; }
