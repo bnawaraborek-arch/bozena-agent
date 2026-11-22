@@ -1,7 +1,8 @@
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
-import { convertToModelMessages, streamText, validateUIMessages } from 'ai';
+import { convertToModelMessages, stepCountIs, streamText, validateUIMessages, wrapLanguageModel } from 'ai';
 import { hasSession, privateHeaders } from '../../../lib/session';
 import { systemInstruction } from '../../../lib/studio-instruction';
+import { validImageData } from '../../../lib/image-validation';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -15,7 +16,7 @@ export async function POST(request: Request) {
     const last = messages[messages.length - 1];
     if (!last || last.role !== 'user' ||
         !last.parts.some(part => part.type === 'text' && part.text.trim()) ||
-        messages.some(message => !['user', 'assistant'].includes(message.role) || message.parts.some(part => part.type !== 'text' && !(message.role === 'assistant' && (part.type === 'step-start' || part.type === 'reasoning'))))) {
+        messages.some(message => !['user', 'assistant'].includes(message.role) || message.parts.some(part => part.type !== 'text' && !(message.role === 'user' && part.type === 'file' && validImageData(part.url, part.mediaType)) && !(message.role === 'assistant' && (part.type === 'step-start' || part.type === 'reasoning'))))) {
       throw new Error('Invalid messages');
     }
   } catch {
@@ -28,15 +29,31 @@ export async function POST(request: Request) {
   }
   try {
     const openrouter = createOpenRouter({ apiKey });
+    const hasImage = messages.some(message => message.role === 'user' && message.parts.some(part => part.type === 'file'));
+    let actualModel: string | undefined;
+    const selectedModel = openrouter(hasImage ? 'google/gemini-3.8-flash' : model);
+    const languageModel = hasImage ? wrapLanguageModel({ model: selectedModel, middleware: {
+      specificationVersion: 'v3',
+      wrapStream: async ({ doStream }) => {
+        const result = await doStream();
+        return { ...result, stream: result.stream.pipeThrough(new TransformStream({ transform(chunk, controller) {
+          if (chunk.type === 'response-metadata' && chunk.modelId) actualModel = chunk.modelId;
+          controller.enqueue(chunk);
+        } })) };
+      },
+    } }) : selectedModel;
     const result = streamText({
-      model: openrouter(model),
+      model: languageModel,
       system: systemInstruction,
       messages: await convertToModelMessages(messages),
+      tools: { web_search: openrouter.tools.webSearch({ maxResults: 3, engine: 'native' }) },
+      stopWhen: stepCountIs(5),
       abortSignal: request.signal,
       // Nie zapisuj surowych błędów dostawcy, które mogą zawierać dane żądania.
       onError: () => {},
     });
-    return result.toUIMessageStreamResponse({ onError: () => connectionError });
+    return result.toUIMessageStreamResponse({ sendSources: true, onError: () => connectionError,
+      messageMetadata: ({ part }) => part.type === 'finish' && hasImage ? { visionModelId: actualModel ?? null } : undefined });
   } catch {
     return new Response(connectionError, { status: 502 });
   }
