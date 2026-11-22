@@ -1,6 +1,7 @@
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { convertToModelMessages, streamText, validateUIMessages } from 'ai';
 import { hasSession, privateHeaders } from '../../../lib/session';
+import { systemInstruction } from '../../../lib/studio-instruction';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -29,6 +30,7 @@ export async function POST(request: Request) {
     const openrouter = createOpenRouter({ apiKey });
     const result = streamText({
       model: openrouter(model),
+      system: systemInstruction,
       messages: await convertToModelMessages(messages),
       abortSignal: request.signal,
       // Nie zapisuj surowych błędów dostawcy, które mogą zawierać dane żądania.
