@@ -1,7 +1,6 @@
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { convertToModelMessages, stepCountIs, streamText, validateUIMessages, wrapLanguageModel } from 'ai';
 import { hasSession, privateHeaders } from '../../../lib/session';
-import { systemInstruction } from '../../../lib/studio-instruction';
 import { validImageData } from '../../../lib/image-validation';
 
 export const runtime = 'nodejs';
@@ -44,7 +43,7 @@ export async function POST(request: Request) {
     } }) : selectedModel;
     const result = streamText({
       model: languageModel,
-      system: systemInstruction,
+      system: 'Jesteś BONA.AI — Twój osobisty asystent AI. Pomagaj użytkownikowi, odpowiadając jasno i uprzejmie. Na pytanie o tożsamość przedstaw się jako BONA.AI. Nie ukrywaj używanego modelu, ale nie zgaduj jego nazwy, jeśli jej nie znasz. Gdy pytanie dotyczy aktualnych wydarzeń, cen, dat lub niepewnych faktów, użyj wyszukiwania i oprzyj odpowiedź na źródłach. Nie wymyślaj źródeł. Gdy nie znajdziesz wiarygodnych wyników, powiedz o tym jasno.',
       messages: await convertToModelMessages(messages),
       tools: { web_search: openrouter.tools.webSearch({ maxResults: 3, engine: 'native' }) },
       stopWhen: stepCountIs(5),
