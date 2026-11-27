@@ -1,4 +1,4 @@
-﻿const assert = require('node:assert/strict');
+const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const ts = require('typescript');
@@ -38,7 +38,8 @@ test('real agent stream stops at two mocked steps, preserves results and complet
   const exports = {};
   const source = ts.transpileModule(fs.readFileSync('app/api/agent/route.ts', 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
   vm.runInNewContext(source, { exports, Response, Buffer, process: { env: { OPENROUTER_API_KEY: 'fake', OPENROUTER_MODEL: 'fake' } }, require(name) {
-    if (name.endsWith('/session')) return { hasSession: () => true, sameOrigin: () => true, privateHeaders: {} };
+    if (name.endsWith('/user-profile')) return { loadUserProfile: async () => ({ name: null, preferences: null }), saveUserProfile: async () => true };
+      if (name.endsWith('/session')) return { hasSession: () => true, sameOrigin: () => true, privateHeaders: {} };
     if (name.endsWith('/image-validation')) return { validImageData: () => false };
     if (name.endsWith('/agent-tools')) return { agentStepLimit: 2, createAgentTools: () => fakeTools };
     if (name.endsWith('/agent-limits')) return { TOOL_LIMIT: 16, TASK_TIMEOUT_MS: 60000, createToolGuard: () => ({ wrap: tools => tools, recordProviderCall: () => {} }) };

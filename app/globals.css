@@ -43,6 +43,12 @@ h2 { font-size: 1.25rem; letter-spacing: -.02em; }
 .mode-nav button { background: transparent; color: #555568; }
 .mode-nav button:hover:not(:disabled) { background: #fff8f7; }
 .mode-nav button[aria-pressed=true] { background: #fff; color: #a31360; box-shadow: 0 2px 8px #25203912; }
+.history-list { margin: 16px 0; padding: 16px; border: 1px solid #e8e0db; border-radius: 16px; background: #fffdfa; }
+.history-list h2 { margin-bottom: 10px; }
+.history-list ul { display: flex; flex-wrap: wrap; gap: 8px; padding: 0; margin: 0; list-style: none; }
+.history-list button:not(.logout) { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; background: #f1edea; color: #292a40; text-align: left; }
+.history-list button[aria-pressed=true] { outline: 2px solid #bd176f; }
+.history-list time { font-size: .75rem; font-weight: 400; }
 .conversation { min-height: 360px; padding: 28px; border: 1px solid #e8e0db; border-radius: 22px; background: #fffdfa; box-shadow: 0 12px 35px #34243a09; }
 .conversation > p:first-child { margin: 24px 0; text-align: center; color: #777485; }
 .message { width: fit-content; max-width: min(78%, 640px); padding: 16px 19px; margin: 0 auto 18px 0; border-radius: 18px 18px 18px 5px; background: #f1edea; overflow-wrap: anywhere; }

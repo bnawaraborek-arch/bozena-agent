@@ -1,4 +1,4 @@
-﻿const assert = require('node:assert/strict');
+const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
@@ -38,7 +38,8 @@ test('actual agent passes mocked NBP rate to calculator and calculator result to
     vm.runInNewContext(source, { exports, Response, Buffer, URLSearchParams, AbortController, AbortSignal, setTimeout, clearTimeout, Intl, Date, process: { env: { OPENROUTER_API_KEY: 'fake', OPENROUTER_MODEL: 'fake' } },
       fetch: async url => { apiRequests.push(url); return { ok: true, json: async () => ({ table: 'A', currency: 'euro', code: 'EUR', rates: [{ effectiveDate: '2026-11-23', mid: 4.25 }] }) }; },
       require(name) {
-        if (name.endsWith('/session')) return { hasSession: () => true, sameOrigin: () => true, privateHeaders: {} };
+        if (name.endsWith('/user-profile')) return { loadUserProfile: async () => ({ name: null, preferences: null }), saveUserProfile: async () => true };
+      if (name.endsWith('/session')) return { hasSession: () => true, sameOrigin: () => true, privateHeaders: {} };
         if (name === '@openrouter/ai-sdk-provider') return { createOpenRouter: () => Object.assign(() => model, { imageModel: () => 'fake', tools: { webSearch: () => ai.tool({ inputSchema: z.object({}), execute: async () => ({}) }) } }) };
         if (name.startsWith('.')) {
           const loaded = load(path.resolve(path.dirname(file), name) + '.ts');

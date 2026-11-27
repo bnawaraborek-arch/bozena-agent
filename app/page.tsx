@@ -5,12 +5,13 @@ import { useEffect, useState } from 'react';
 import type { Analysis } from '../lib/analysis';
 import { AgentProgress } from './agent-progress';
 import { MessageText } from './message-text';
+import { useConversationHistory, type Conversation } from './use-conversation-history';
 
-type ChatMessage = UIMessage<{ visionModelId?: string | null }>;
+type ChatMessage = UIMessage<{ visionModelId?: string | null; generatedImage?: boolean; imageModelId?: string | null }>;
 const transport = new DefaultChatTransport<ChatMessage>({
   api: '/api/chat',
-  prepareSendMessagesRequest: ({ messages }) => ({
-    body: { messages: messages.map(message => ({ ...message, parts: message.parts.filter(part => part.type === 'text' || (message.role === 'user' && part.type === 'file')) })) },
+  prepareSendMessagesRequest: ({ messages, body }) => ({
+    body: { ...body, messages: messages.map(message => ({ ...message, parts: message.parts.filter(part => part.type === 'text' || (message.role === 'user' && part.type === 'file')) })) },
   }),
 });
 
@@ -27,22 +28,35 @@ function Source({ url, title }: { url: string; title?: string }) {
 type AgentMessage = UIMessage<{ limitReached?: boolean; stepLimit?: number; steps?: number; toolCalls?: number; seconds?: number; timedOut?: boolean; toolLimitReached?: boolean }>;
 const agentTransport = new DefaultChatTransport<AgentMessage>({
   api: '/api/agent',
-  prepareSendMessagesRequest: ({ messages }) => ({ body: { messages: messages.map(message => ({ ...message, parts: message.parts.filter(part => part.type === 'text' || (message.role === 'user' && part.type === 'file')) })) } }),
+  prepareSendMessagesRequest: ({ messages, body }) => ({ body: { ...body, messages: messages.map(message => ({ ...message, parts: message.parts.filter(part => part.type === 'text' || (message.role === 'user' && part.type === 'file')) })) } }),
 });
 
 const toolLabels: Record<string, string> = {
   web_search: 'Wyszukiwanie', generate_image: 'Generowanie obrazu', pogoda: 'Pogoda', waluty: 'Waluty',
-  swieta: 'Święta', wikipedia: 'Wikipedia', kalkulator: 'Kalkulator', czas: 'Czas', notatki: 'Notatki', diagnostyka: 'Diagnostyka',
+  swieta: 'Święta', wikipedia: 'Wikipedia', kalkulator: 'Kalkulator', czas: 'Czas', notatki: 'Notatki', diagnostyka: 'Diagnostyka', zapiszProfil: 'Pamięć użytkownika',
 };
 
+function ConversationList({ conversations, activeId, error, disabled, onSelect, onRetry }: { conversations: Conversation[]; activeId: number | null; error: string; disabled: boolean; onSelect: (id: number) => void; onRetry: () => void }) {
+  return <section className="history-list" aria-label="Zapisane rozmowy">
+    <h2>Zapisane rozmowy</h2>
+    {error ? <p role="alert">{error} <button type="button" className="logout" onClick={onRetry}>Spróbuj ponownie</button></p> : conversations.length === 0 ? <p>Brak zapisanych rozmów.</p> :
+      <ul>{conversations.map(item => <li key={item.id}><button type="button" disabled={disabled} aria-pressed={activeId === item.id} onClick={() => onSelect(item.id)}><span>{item.title?.trim() || 'Nowa rozmowa'}</span><time dateTime={item.created_at}>{Number.isNaN(Date.parse(item.created_at)) ? 'Data niedostępna' : new Date(item.created_at).toLocaleString('pl-PL')}</time></button></li>)}</ul>}
+  </section>;
+}
+
 function Agent() {
-  const { messages, sendMessage, status, error, stop } = useChat<AgentMessage>({ transport: agentTransport });
+  const { messages, setMessages, sendMessage, status, error, stop } = useChat<AgentMessage>({ transport: agentTransport });
+  const history = useConversationHistory('bona.conversation.agent', setMessages);
   const [text, setText] = useState('');
   const [photo, setPhoto] = useState<File | null>(null);
   const [localError, setLocalError] = useState('');
-  const busy = status === 'streaming' || status === 'submitted';
+  const busy = status === 'streaming' || status === 'submitted' || history.creating || history.loadingConversation;
   useEffect(() => () => { void stop(); }, [stop]);
   return <>
+    <button type="button" className="logout" disabled={busy} onClick={history.startNew}>Nowa rozmowa agenta</button>
+    <ConversationList conversations={history.conversations} activeId={history.activeId} error={history.listError} disabled={busy || (!history.ready && !history.error)} onSelect={id => void history.selectConversation(id)} onRetry={() => void history.refreshList()} />
+    {!history.ready && !history.error && <p role="status">Wczytywanie historii…</p>}
+    {history.error && <p role="alert" className="error">{history.error}</p>}
     <section className="conversation" aria-label="Rozmowa z agentem" aria-live="polite">
       {messages.length === 0 && <p>Napisz zadanie dla agenta.</p>}
       {messages.map(message => <article className={`message ${message.role}`} key={message.id}>
@@ -71,13 +85,14 @@ function Agent() {
     {busy && <p className="typing" role="status"><span aria-hidden="true">•••</span> Agent pisze…</p>}
     {(error || localError) && <p role="alert" className="error">{localError || error?.message || 'Błąd agenta.'}</p>}
     <form className="composer" onSubmit={async event => {
-      event.preventDefault(); if (!text.trim() || busy) return;
+      event.preventDefault(); if (!text.trim() || busy || !history.ready) return;
       try {
         const files = photo ? [{ type: 'file' as const, mediaType: photo.type, filename: photo.name, url: await new Promise<string>((resolve, reject) => {
           const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(new Error()); reader.readAsDataURL(photo);
         }) }] : undefined;
-        setLocalError(''); void sendMessage({ text: text.trim(), files }); setText(''); setPhoto(null);
-      } catch { setLocalError('Nie udało się odczytać zdjęcia.'); }
+        const conversationId = await history.getOrCreate();
+        setLocalError(''); void sendMessage({ text: text.trim(), files }, { body: { conversationId } }); setText(''); setPhoto(null);
+      } catch (err) { setLocalError(err instanceof Error && err.message.startsWith('Nie udało się utworzyć') ? err.message : 'Nie udało się odczytać zdjęcia.'); }
     }}>
       <label htmlFor="agent-photo">Dodaj zdjęcie (opcjonalnie)</label>
       <input id="agent-photo" type="file" accept="image/jpeg,image/png,image/webp" disabled={busy} onChange={event => {
@@ -88,13 +103,14 @@ function Agent() {
       }} />
       {photo && <p>Wybrano: {photo.name} <button type="button" onClick={() => setPhoto(null)}>Usuń zdjęcie</button></p>}
       <label htmlFor="agent-message">Zadanie dla agenta</label>
-      <div className="message-row"><input id="agent-message" value={text} onChange={event => setText(event.target.value)} disabled={busy} /><button disabled={busy || !text.trim()}>Wyślij</button></div>
+      <div className="message-row"><input id="agent-message" value={text} onChange={event => setText(event.target.value)} disabled={busy || !history.ready} /><button disabled={busy || !history.ready || !text.trim()}>Wyślij</button></div>
     </form>
   </>;
 }
 
 function Chat({ onLogout }: { onLogout: () => void }) {
-  const { messages, sendMessage, status, error, clearError, stop } = useChat<ChatMessage>({ transport });
+  const { messages, setMessages, sendMessage, status, error, clearError, stop } = useChat<ChatMessage>({ transport });
+  const history = useConversationHistory('bona.conversation.chat', setMessages);
   useEffect(() => () => { void stop(); }, [stop]);
   const [input, setInput] = useState('');
   const [photo, setPhoto] = useState<File | null>(null);
@@ -106,7 +122,7 @@ function Chat({ onLogout }: { onLogout: () => void }) {
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
   const [analysisError, setAnalysisError] = useState('');
   const [analyzing, setAnalyzing] = useState(false);
-  const busy = status === 'submitted' || status === 'streaming';
+  const busy = status === 'submitted' || status === 'streaming' || history.creating || history.loadingConversation;
   return (
     <main className="studio">
       <header className="studio-header">
@@ -144,14 +160,19 @@ function Chat({ onLogout }: { onLogout: () => void }) {
           <p>Każda odpowiedź jest szkicem.</p>
         </section>}
       </> : <>
+      <button type="button" className="logout" disabled={busy || generating} onClick={() => { history.startNew(); setGenerated([]); }}>Nowa rozmowa</button>
+      <ConversationList conversations={history.conversations} activeId={history.activeId} error={history.listError} disabled={busy || generating || (!history.ready && !history.error)} onSelect={id => { void history.selectConversation(id).then(ok => { if (ok) setGenerated([]); }); }} onRetry={() => void history.refreshList()} />
+      {!history.ready && !history.error && <p role="status">Wczytywanie historii…</p>}
+      {history.error && <p role="alert" className="error">{history.error}</p>}
       <section className="conversation" aria-label="Rozmowa" aria-live="polite" aria-busy={busy}>
         {messages.length === 0 && <p>Napisz wiadomość, aby rozpocząć rozmowę.</p>}
         {messages.map(message => (
           <article className={`message ${message.role}`} key={message.id}>
-            <strong>{message.role === 'user' ? 'Ty' : 'Asystent'}</strong>
-            {message.parts.map((part, index) => part.type === 'text' ? (message.role === 'assistant' ? <MessageText key={index} text={part.text} /> : <p key={index}>{part.text}</p>) : part.type === 'file' && part.mediaType.startsWith('image/') ? <img key={index} src={part.url} alt="Zdjęcie użytkownika" style={{ maxWidth: 240, maxHeight: 200 }} /> : null)}
+            <strong>{message.role === 'user' ? 'Ty' : message.metadata?.generatedImage ? 'Wygenerowany obraz' : 'Asystent'}</strong>
+            {message.parts.map((part, index) => part.type === 'text' ? (message.role === 'assistant' ? <MessageText key={index} text={part.text} /> : <p key={index}>{part.text}</p>) : part.type === 'file' && part.mediaType.startsWith('image/') ? <img key={index} src={part.url} alt={message.metadata?.generatedImage ? 'Wygenerowany obraz' : 'Zdjęcie użytkownika'} style={message.metadata?.generatedImage ? { maxWidth: '100%' } : { maxWidth: 240, maxHeight: 200 }} /> : null)}
+            {message.metadata?.generatedImage && <p>{message.metadata.imageModelId ? `Model: ${message.metadata.imageModelId}` : 'Model: informacja niedostępna'}</p>}
             {message.role === 'assistant' && message.metadata?.visionModelId && <p>Model analizy zdjęcia: {message.metadata.visionModelId}</p>}
-            {message.role === 'assistant' && (() => {
+            {message.role === 'assistant' && !message.metadata?.generatedImage && (() => {
               const sources = message.parts.filter(part => part.type === 'source-url');
               return sources.length ? <><strong>Źródła:</strong><ul>{sources.map((source, index) =>
                 <Source key={`${source.sourceId}-${index}`} url={source.url} title={source.title} />)}</ul></> :
@@ -166,16 +187,16 @@ function Chat({ onLogout }: { onLogout: () => void }) {
       <form className="composer" onSubmit={async event => {
         event.preventDefault();
         const text = input.trim();
-        if (!text || busy) return;
+        if (!text || busy || !history.ready) return;
         clearError();
-        setInput('');
         try {
           const files = photo ? [{ type: 'file' as const, mediaType: photo.type, filename: photo.name, url: await new Promise<string>((resolve, reject) => {
             const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(new Error()); reader.readAsDataURL(photo);
           }) }] : undefined;
-          setPhoto(null); setPhotoError('');
-          void sendMessage({ text, files });
-        } catch { setPhotoError('Nie udało się odczytać zdjęcia.'); }
+          const conversationId = await history.getOrCreate();
+          setInput(''); setPhoto(null); setPhotoError('');
+          void sendMessage({ text, files }, { body: { conversationId } });
+        } catch (err) { setPhotoError(err instanceof Error && err.message.startsWith('Nie udało się utworzyć') ? err.message : 'Nie udało się odczytać zdjęcia.'); }
       }}>
         <label htmlFor="message">Wiadomość</label>
         <label htmlFor="photo">Dodaj zdjęcie</label>
@@ -189,17 +210,19 @@ function Chat({ onLogout }: { onLogout: () => void }) {
         {photoError && <p className="error" role="alert">{photoError}</p>}
         <div className="message-row">
           <input id="message" name="message" placeholder="Napisz wiadomość…" autoComplete="off"
-            value={input} onChange={event => setInput(event.target.value)} disabled={busy} />
-          <button type="submit" disabled={busy || !input.trim()}>Wyślij</button>
-          <button type="button" disabled={generating || busy || !input.trim()} onClick={async () => {
+            value={input} onChange={event => setInput(event.target.value)} disabled={busy || !history.ready} />
+          <button type="submit" disabled={busy || !history.ready || !input.trim()}>Wyślij</button>
+          <button type="button" disabled={generating || busy || !history.ready || !input.trim()} onClick={async () => {
             const prompt = input.trim();
             if (prompt.length > 500) { setPhotoError('Opis obrazu może mieć maksymalnie 500 znaków.'); return; }
             setGenerating(true); setPhotoError('');
             try {
-              const response = await fetch('/api/image', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt }) });
+              const conversationId = await history.getOrCreate();
+              const response = await fetch('/api/image', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt, conversationId }) });
               if (!response.ok) { setPhotoError(await response.text()); return; }
               const result = await response.json();
               setGenerated(items => [...items, { prompt, url: result.url, modelId: result.modelId }]); setInput('');
+              if (result.historySaved === false) setPhotoError('Obraz powstał, ale nie udało się zapisać go w historii.');
             } catch { setPhotoError('Nie udało się połączyć z serwerem.'); }
             finally { setGenerating(false); }
           }}>{generating ? 'Generowanie…' : 'Wygeneruj obraz'}</button>

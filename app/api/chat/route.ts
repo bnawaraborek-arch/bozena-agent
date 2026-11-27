@@ -9,8 +9,15 @@ const connectionError = 'Nie udało się uzyskać odpowiedzi z OpenRouter. Spraw
 export async function POST(request: Request) {
   if (!hasSession(request)) return new Response('Brak dostępu. Zaloguj się.', { status: 401, headers: privateHeaders });
   let messages;
+  let savedConversationId: number | undefined;
   try {
     const body = await request.json();
+    if (body.conversationId !== undefined) {
+      const { conversationId } = await import('../../../lib/conversation-store');
+      const id = conversationId(body.conversationId);
+      if (!id) throw new Error('Invalid conversation');
+      savedConversationId = id;
+    }
     messages = await validateUIMessages({ messages: body.messages });
     const last = messages[messages.length - 1];
     if (!last || last.role !== 'user' ||
@@ -27,6 +34,11 @@ export async function POST(request: Request) {
     return new Response('Brak konfiguracji czatu na serwerze.', { status: 503 });
   }
   try {
+    if (savedConversationId) {
+      const { saveMessage } = await import('../../../lib/conversation-store');
+      try { await saveMessage(savedConversationId, messages[messages.length - 1]); }
+      catch { return new Response('Nie udało się zapisać wiadomości. Spróbuj ponownie.', { status: 503, headers: privateHeaders }); }
+    }
     const openrouter = createOpenRouter({ apiKey });
     const hasImage = messages.some(message => message.role === 'user' && message.parts.some(part => part.type === 'file'));
     let actualModel: string | undefined;
@@ -52,6 +64,12 @@ export async function POST(request: Request) {
       onError: () => {},
     });
     return result.toUIMessageStreamResponse({ sendSources: true, onError: () => connectionError,
+      ...(savedConversationId ? { originalMessages: messages, onFinish: async ({ responseMessage }: { responseMessage: typeof messages[number] }) => {
+        if (responseMessage.parts.length) {
+          const { saveMessage } = await import('../../../lib/conversation-store');
+          await saveMessage(savedConversationId, responseMessage);
+        }
+      } } : {}),
       messageMetadata: ({ part }) => part.type === 'finish' && hasImage ? { visionModelId: actualModel ?? null } : undefined });
   } catch {
     return new Response(connectionError, { status: 502 });

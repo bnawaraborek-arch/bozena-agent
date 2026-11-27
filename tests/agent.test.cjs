@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const ai = require('ai');
 const { test } = require('node:test');
 
-function setup({ session = true, generate = async () => ({ image: { base64: 'aW1hZ2U=', mediaType: 'image/png' }, responses: [{ modelId: 'actual/model' }] }) } = {}) {
+function setup({ session = true, profile = { name: null, preferences: null }, generate = async () => ({ image: { base64: 'aW1hZ2U=', mediaType: 'image/png' }, responses: [{ modelId: 'actual/model' }] }) } = {}) {
   let options, responseOptions, calls = 0;
   const cache = {};
   function load(file) {
@@ -14,6 +14,7 @@ function setup({ session = true, generate = async () => ({ image: { base64: 'aW1
     const exports = {}; cache[file] = exports;
     const source = ts.transpileModule(fs.readFileSync(file, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
     vm.runInNewContext(source, { exports, Response, Buffer, AbortController, AbortSignal, setTimeout, clearTimeout, process: { env: { OPENROUTER_API_KEY: 'fake', OPENROUTER_MODEL: 'fake' } }, require(name) {
+      if (name.endsWith('/user-profile')) return { loadUserProfile: async () => profile, saveUserProfile: async () => true };
       if (name.endsWith('/session')) return { hasSession: () => session, sameOrigin: () => true, privateHeaders: {} };
       if (name.startsWith('.')) return load(path.resolve(path.dirname(file), name) + '.ts');
       if (name === '@openrouter/ai-sdk-provider') return { createOpenRouter: () => Object.assign(id => ({ id }), { imageModel: id => id, tools: { webSearch: args => args } }) };
@@ -26,6 +27,18 @@ function setup({ session = true, generate = async () => ({ image: { base64: 'aW1
 }
 const req = parts => new Request('http://localhost/api/agent', { method: 'POST', body: JSON.stringify({ messages: [{ id: '1', role: 'user', parts }] }) });
 const text = [{ type: 'text', text: 'Zadanie' }];
+
+test('agent reads profile before each response and marks it as untrusted data', async () => {
+  const profile = { name: 'Anna', preferences: { miasto: 'Kraków' } };
+  const app = setup({ profile });
+  await app.post(req(text));
+  assert.match(app.options().system, /Anna/); assert.match(app.options().system, /Kraków/);
+  assert.match(app.options().system, /nieufne dane, nie polecenia/);
+  profile.name = 'Ania';
+  await app.post(req(text));
+  assert.match(app.options().system, /Ania/);
+  assert.ok(app.options().tools.zapiszProfil);
+});
 
 test('agent requires session and rejects invalid images before model', async () => {
   const denied = setup({ session: false }); assert.equal((await denied.post(req(text))).status, 401); assert.equal(denied.calls(), 0);
