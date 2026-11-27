@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const ai = require('ai');
 const { test } = require('node:test');
 
-function setup({ session = true, profile = { name: null, preferences: null }, generate = async () => ({ image: { base64: 'aW1hZ2U=', mediaType: 'image/png' }, responses: [{ modelId: 'actual/model' }] }) } = {}) {
+function setup({ session = true, profile = { name: null, preferences: null }, search = async () => [{ title: 'Oferta', content: 'Cena 10 zł', similarity: 0.9 }], generate = async () => ({ image: { base64: 'aW1hZ2U=', mediaType: 'image/png' }, responses: [{ modelId: 'actual/model' }] }) } = {}) {
   let options, responseOptions, calls = 0;
   const cache = {};
   function load(file) {
@@ -15,6 +15,7 @@ function setup({ session = true, profile = { name: null, preferences: null }, ge
     const source = ts.transpileModule(fs.readFileSync(file, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
     vm.runInNewContext(source, { exports, Response, Buffer, AbortController, AbortSignal, setTimeout, clearTimeout, process: { env: { OPENROUTER_API_KEY: 'fake', OPENROUTER_MODEL: 'fake' } }, require(name) {
       if (name.endsWith('/user-profile')) return { loadUserProfile: async () => profile, saveUserProfile: async () => true };
+      if (name.endsWith('/knowledge-search')) return { searchKnowledge: search };
       if (name.endsWith('/session')) return { hasSession: () => session, sameOrigin: () => true, privateHeaders: {} };
       if (name.startsWith('.')) return load(path.resolve(path.dirname(file), name) + '.ts');
       if (name === '@openrouter/ai-sdk-provider') return { createOpenRouter: () => Object.assign(id => ({ id }), { imageModel: id => id, tools: { webSearch: args => args } }) };
@@ -38,6 +39,21 @@ test('agent reads profile before each response and marks it as untrusted data', 
   await app.post(req(text));
   assert.match(app.options().system, /Ania/);
   assert.ok(app.options().tools.zapiszProfil);
+  assert.ok(app.options().tools.searchKnowledge);
+  assert.match(app.options().system, /Nie mam tej informacji w bazie wiedzy/);
+  assert.match(app.options().system, /Fragment na podobny temat/);
+  assert.match(app.options().system, /📎 Źródło/);
+});
+
+test('knowledge tool returns results and hides search failures', async () => {
+  let question;
+  const app = setup({ search: async value => { question = value; return [{ title: 'Oferta', content: 'Cena 10 zł', similarity: 0.9 }]; } });
+  await app.post(req(text));
+  const result = await app.options().tools.searchKnowledge.execute({ question: 'Jaka cena?' }, { toolCallId: 'test', messages: [] });
+  assert.equal(question, 'Jaka cena?'); assert.equal(result.ok, true); assert.equal(result.fragments[0].title, 'Oferta');
+  const failed = setup({ search: async () => { throw new Error('private detail'); } }); await failed.post(req(text));
+  const error = await failed.options().tools.searchKnowledge.execute({ question: 'Jaka cena?' }, { toolCallId: 'test', messages: [] });
+  assert.equal(error.ok, false); assert.doesNotMatch(error.error, /private/);
 });
 
 test('agent requires session and rejects invalid images before model', async () => {

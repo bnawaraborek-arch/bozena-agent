@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react';
 import type { Analysis } from '../lib/analysis';
 import { AgentProgress } from './agent-progress';
 import { MessageText } from './message-text';
+import { KnowledgeSources, stripKnowledgeMarkers } from './knowledge-sources';
 import { useConversationHistory, type Conversation } from './use-conversation-history';
 
 type ChatMessage = UIMessage<{ visionModelId?: string | null; generatedImage?: boolean; imageModelId?: string | null }>;
@@ -33,7 +34,7 @@ const agentTransport = new DefaultChatTransport<AgentMessage>({
 
 const toolLabels: Record<string, string> = {
   web_search: 'Wyszukiwanie', generate_image: 'Generowanie obrazu', pogoda: 'Pogoda', waluty: 'Waluty',
-  swieta: 'Święta', wikipedia: 'Wikipedia', kalkulator: 'Kalkulator', czas: 'Czas', notatki: 'Notatki', diagnostyka: 'Diagnostyka', zapiszProfil: 'Pamięć użytkownika',
+  swieta: 'Święta', wikipedia: 'Wikipedia', kalkulator: 'Kalkulator', czas: 'Czas', notatki: 'Notatki', diagnostyka: 'Diagnostyka', zapiszProfil: 'Pamięć użytkownika', searchKnowledge: 'Baza wiedzy',
 };
 
 function ConversationList({ conversations, activeId, error, disabled, onSelect, onRetry }: { conversations: Conversation[]; activeId: number | null; error: string; disabled: boolean; onSelect: (id: number) => void; onRetry: () => void }) {
@@ -61,13 +62,14 @@ function Agent() {
       {messages.length === 0 && <p>Napisz zadanie dla agenta.</p>}
       {messages.map(message => <article className={`message ${message.role}`} key={message.id}>
         <strong>{message.role === 'user' ? 'Ty' : 'Agent'}</strong>
+        {message.role === 'assistant' && message.parts.some(part => part.type === 'tool-searchKnowledge') && <span className="tool-badge">📚 baza wiedzy</span>}
         {message.role === 'assistant' && <AgentProgress parts={message.parts} {...message.metadata} />}
         {message.parts.map((part, index) => {
-          if (part.type === 'text') return message.role === 'assistant' ? <MessageText key={index} text={part.text} /> : <p key={index}>{part.text}</p>;
+          if (part.type === 'text') return message.role === 'assistant' ? <MessageText key={index} text={stripKnowledgeMarkers(part.text)} /> : <p key={index}>{part.text}</p>;
           if (part.type.startsWith('tool-')) {
             const name = part.type.slice(5);
             const label = toolLabels[name];
-            if (label && (name !== 'generate_image' || ('state' in part && part.state !== 'output-available' && part.state !== 'output-error'))) return <span className="tool-badge" key={index}>Narzędzie: {label}</span>;
+            if (label && name !== 'searchKnowledge' && (name !== 'generate_image' || ('state' in part && part.state !== 'output-available' && part.state !== 'output-error'))) return <span className="tool-badge" key={index}>Narzędzie: {label}</span>;
           }
           if (part.type === 'file' && part.mediaType.startsWith('image/')) return <img key={index} src={part.url} alt="Zdjęcie użytkownika" style={{ maxWidth: 240 }} />;
           if (part.type === 'source-url') return <ul key={index}><Source url={part.url} title={part.title} /></ul>;
@@ -79,6 +81,7 @@ function Agent() {
           if (part.type === 'tool-generate_image' && part.state === 'output-error') return <div key={index}><span className="tool-badge">Narzędzie: Generowanie obrazu</span><p className="error">Nie udało się wykonać narzędzia generowania obrazu.</p></div>;
           return null;
         })}
+        {message.role === 'assistant' && <KnowledgeSources parts={message.parts} />}
         {message.role === 'assistant' && message.metadata?.steps !== undefined && <p className="agent-metrics">Kroki modelu: {message.metadata.steps} · Wywołania narzędzi: {message.metadata.toolCalls ?? 0} · Czas: {(message.metadata.seconds ?? 0).toFixed(1)} s</p>}
       </article>)}
     </section>
@@ -127,7 +130,7 @@ function Chat({ onLogout }: { onLogout: () => void }) {
     <main className="studio">
       <header className="studio-header">
         <div><span className="eyebrow">Twoja przestrzeń do pracy z AI</span><h1>BONA<span>.AI</span></h1><p>Twój osobisty asystent AI.<br />Wyszukuje, analizuje i tworzy.</p></div>
-        <div className="header-actions"><a className="nav-link" href="/dashboard">Dashboard podróży</a><button className="logout" onClick={onLogout}>Wyjdź</button></div>
+        <div className="header-actions"><a className="nav-link" href="/upload">Baza wiedzy</a><a className="nav-link" href="/dashboard">Dashboard podróży</a><button className="logout" onClick={onLogout}>Wyjdź</button></div>
       </header>
       <nav className="mode-nav" aria-label="Tryb pracy">
         <button type="button" aria-pressed={mode === 'chat'} onClick={() => setMode('chat')}>Czat</button>{' '}

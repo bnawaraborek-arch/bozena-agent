@@ -1,5 +1,5 @@
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
-import { convertToModelMessages, stepCountIs, streamText, validateUIMessages, wrapLanguageModel } from 'ai';
+import { convertToModelMessages, generateId, stepCountIs, streamText, validateUIMessages, wrapLanguageModel } from 'ai';
 import { hasSession, privateHeaders } from '../../../lib/session';
 import { validImageData } from '../../../lib/image-validation';
 
@@ -64,7 +64,7 @@ export async function POST(request: Request) {
       onError: () => {},
     });
     return result.toUIMessageStreamResponse({ sendSources: true, onError: () => connectionError,
-      ...(savedConversationId ? { originalMessages: messages, onFinish: async ({ responseMessage }: { responseMessage: typeof messages[number] }) => {
+      ...(savedConversationId ? { originalMessages: messages, generateMessageId: generateId, onFinish: async ({ responseMessage }: { responseMessage: typeof messages[number] }) => {
         if (responseMessage.parts.length) {
           const { saveMessage } = await import('../../../lib/conversation-store');
           await saveMessage(savedConversationId, responseMessage);

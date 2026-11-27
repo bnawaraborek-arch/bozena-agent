@@ -33,12 +33,23 @@ export async function loadConversation(id: number): Promise<UIMessage[] | null> 
   if (!conversation) return null;
   const { data: rows, error } = await db.from('messages').select('id, role, content').eq('conversation_id', id).order('created_at', { ascending: true }).order('id', { ascending: true });
   if (error || !rows) throw new Error('Nie udało się odczytać wiadomości.');
-  return rows.map(row => {
+  const parsedRows = rows.map(row => {
     if ((row.role !== 'user' && row.role !== 'assistant') || typeof row.content !== 'string') throw new Error('Nieprawidłowa zapisana wiadomość.');
     try {
       const parsed: unknown = JSON.parse(row.content);
       if (parsed && typeof parsed === 'object' && 'id' in parsed && typeof parsed.id === 'string' && 'role' in parsed && parsed.role === row.role && 'parts' in parsed && Array.isArray(parsed.parts)) return parsed as UIMessage;
     } catch { /* Wiadomości zapisane jako zwykły tekst pozostają czytelne. */ }
     return { id: `db-${row.id}`, role: row.role, parts: [{ type: 'text', text: row.content }] } as UIMessage;
+  });
+  // Starsze odpowiedzi SDK bywały zapisywane z pustym ID. Identyfikator wiersza
+  // pozwala przywrócić stabilne, różne ID bez usuwania ani scalania wiadomości.
+  const reserved = new Set(parsedRows.map(message => message.id).filter(id => id.trim()));
+  const used = new Set<string>();
+  return parsedRows.map((message, index) => {
+    if (message.id.trim() && !used.has(message.id)) { used.add(message.id); return message; }
+    let replacement = `db-message-${rows[index].id}`;
+    while (reserved.has(replacement) || used.has(replacement)) replacement += '-';
+    used.add(replacement);
+    return { ...message, id: replacement };
   });
 }

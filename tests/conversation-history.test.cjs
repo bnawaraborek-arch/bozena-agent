@@ -59,20 +59,43 @@ for (const mode of ['chat', 'agent']) test(`${mode}: saves both messages and res
   const created = await app.create(req('/api/conversations')); assert.equal(created.status, 201);
   const { id } = await created.json();
   const sent = await app[mode](req(`/api/${mode}`, { conversationId: id, messages: [userMessage('Cześć')] }));
-  assert.equal(sent.status, 200); assert.match(await sent.text(), /\[DONE\]/);
+  assert.equal(sent.status, 200); const stream = await sent.text(); assert.match(stream, /\[DONE\]/);
   assert.equal(app.messages.length, 2); assert.equal(app.messages[0].role, 'user'); assert.equal(app.messages[1].role, 'assistant');
   const history = await app.get(getReq(id), params(id)); assert.equal(history.status, 200);
   const restored = await history.json();
   assert.equal(restored.id, id); assert.equal(restored.messages[0].parts[0].text, 'Cześć');
   assert.ok(restored.messages[1].parts.some(part => part.type === 'text' && part.text === 'Odpowiedź testowa.'));
   assert.ok(restored.messages[1].parts.some(part => part.type === 'source-url'));
+  const start = stream.split('\n').filter(line => line.startsWith('data: {')).map(line => JSON.parse(line.slice(6))).find(part => part.type === 'start');
+  assert.ok(start.messageId); assert.equal(restored.messages[1].id, start.messageId);
   const prior = restored.messages.map(message => ({ ...message, parts: message.parts.filter(part => part.type === 'text' || (message.role === 'user' && part.type === 'file')) }));
   const next = { id: 'user-2', role: 'user', parts: [{ type: 'text', text: 'Kontynuuj rozmowę' }] };
   const continued = await app[mode](req(`/api/${mode}`, { conversationId: id, messages: [...prior, next] }));
   assert.equal(continued.status, 200); await continued.text();
   assert.equal(app.conversations.length, 1); assert.equal(app.messages.length, 4);
+  const reloaded = await (await app.get(getReq(id), params(id))).json();
+  assert.equal(new Set(reloaded.messages.map(message => message.id)).size, 4);
+  assert.ok(reloaded.messages.every(message => message.id));
   const modelInput = JSON.stringify(app.model.doStreamCalls[1].prompt);
   assert.match(modelInput, /Cześć/); assert.match(modelInput, /Odpowiedź testowa/); assert.match(modelInput, /Kontynuuj rozmowę/);
+});
+
+test('legacy missing and duplicate message ids are repaired without losing messages', async () => {
+  const app = setup(); const { id } = await (await app.create(req('/api/conversations'))).json();
+  const rows = [
+    { id: '', role: 'assistant', parts: [{ type: 'text', text: 'Pierwsza' }] },
+    { id: '', role: 'assistant', parts: [{ type: 'text', text: 'Druga' }] },
+    { id: 'powtórzony', role: 'user', parts: [{ type: 'text', text: 'Trzecia' }] },
+    { id: 'powtórzony', role: 'assistant', parts: [{ type: 'text', text: 'Czwarta' }] },
+  ];
+  rows.forEach((message, index) => app.messages.push({ id: index + 1, conversation_id: id, role: message.role, content: JSON.stringify(message) }));
+  const first = await (await app.get(getReq(id), params(id))).json();
+  const second = await (await app.get(getReq(id), params(id))).json();
+  assert.equal(first.messages.length, 4);
+  assert.deepEqual(first.messages.map(message => message.parts[0].text), ['Pierwsza', 'Druga', 'Trzecia', 'Czwarta']);
+  assert.ok(first.messages.every(message => message.id));
+  assert.equal(new Set(first.messages.map(message => message.id)).size, 4);
+  assert.deepEqual(first.messages.map(message => message.id), second.messages.map(message => message.id));
 });
 
 test('history endpoints reject unauthenticated access before the database', async () => {
